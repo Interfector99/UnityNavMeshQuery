@@ -15,20 +15,6 @@ public partial struct NavAgentSystem : ISystem
         var navMeshWorld = NavMeshWorld.GetDefaultWorld();
         var query = new NavMeshQuery(navMeshWorld, Allocator.TempJob);
 
-        // Collect all agents
-        var agentQuery = SystemAPI.QueryBuilder()
-            .WithAll<NavAgentComponent, LocalTransform>()
-            .Build();
-
-        var agentEntities = agentQuery.ToEntityArray(Allocator.TempJob);
-        var agentTransforms = agentQuery.ToComponentDataArray<LocalTransform>(Allocator.TempJob);
-
-        var agentPositions = new NativeArray<float3>(agentTransforms.Length, Allocator.TempJob);
-        for (int i = 0; i < agentTransforms.Length; i++)
-        {
-            agentPositions[i] = agentTransforms[i].Position;
-        }
-
         // Update agents
         foreach (var (navAgent, transform, entity)
             in SystemAPI.Query<
@@ -38,23 +24,35 @@ public partial struct NavAgentSystem : ISystem
         {
             DynamicBuffer<WaypointBuffer> waypointBuffer = state.EntityManager.GetBuffer<WaypointBuffer>(entity);
 
+            float3 currentTargetPosition = state.EntityManager.GetComponentData<LocalTransform>(navAgent.ValueRO.targetEntity).Position;
+
+            // Check if the target has moved
+            if (!math.all(navAgent.ValueRO.lastTargetPosition == currentTargetPosition))
+            {
+                // Update last known target position
+                navAgent.ValueRW.lastTargetPosition = currentTargetPosition;
+
+                // Force immediate path recalculation
+                navAgent.ValueRW.nextPathCalculateTime = 0;
+                navAgent.ValueRW.pathCalculated = false;
+                waypointBuffer.Clear();
+            }
+
             if (navAgent.ValueRO.nextPathCalculateTime < SystemAPI.Time.ElapsedTime)
             {
-                navAgent.ValueRW.nextPathCalculateTime += 1;
+                navAgent.ValueRW.nextPathCalculateTime = (float)SystemAPI.Time.ElapsedTime + 1; // Update to recalculate every second
                 navAgent.ValueRW.pathCalculated = false;
                 CalculatePath(navAgent, transform, waypointBuffer, ref state);
             }
             else
             {
-                Move(navAgent, transform, waypointBuffer, ref state, entity, query, agentEntities, agentPositions);
+                Move(navAgent, transform, waypointBuffer, ref state, entity, query);
             }
         }
 
         query.Dispose();
-        agentEntities.Dispose();
-        agentTransforms.Dispose();
-        agentPositions.Dispose();
     }
+
 
     [BurstCompile]
     private void Move(
@@ -63,50 +61,65 @@ public partial struct NavAgentSystem : ISystem
     DynamicBuffer<WaypointBuffer> waypointBuffer,
     ref SystemState state,
     Entity entity,
-    NavMeshQuery query,
-    NativeArray<Entity> agentEntities,
-    NativeArray<float3> agentPositions)
+    NavMeshQuery query)
     {
-        // Check if the waypointBuffer has waypoints
-        if (waypointBuffer.Length == 0)
+        float3 agentPosition = transform.ValueRO.Position;
+        float3 targetPosition = state.EntityManager.GetComponentData<LocalTransform>(navAgent.ValueRO.targetEntity).Position;
+
+        // Define a stopping distance
+        float stoppingDistance = 0.5f; // Adjust as needed
+
+        // Calculate the distance to the target
+        float distanceToTarget = math.distance(agentPosition, targetPosition);
+
+        // If the agent is within stopping distance, do nothing
+        if (distanceToTarget <= stoppingDistance)
         {
-            // No waypoints to follow, possibly path calculation failed
-            // You can choose to attempt to recalculate the path or handle this case appropriately
+            // Agent has reached the target
             return;
         }
 
-        // Ensure currentWaypoint index is within the bounds of waypointBuffer
-        if (navAgent.ValueRO.currentWaypoint >= waypointBuffer.Length)
-        {
-            // Reached the end of waypoints
-            return;
-        }
+        float3 desiredVelocity;
 
-        // Check if we have reached the current waypoint
-        if (math.distance(transform.ValueRO.Position, waypointBuffer[navAgent.ValueRO.currentWaypoint].wayPoint) < 0.4f)
+        // If no waypoints or reached the end of waypoints, move directly towards the target
+        if (waypointBuffer.Length == 0 || navAgent.ValueRO.currentWaypoint >= waypointBuffer.Length)
         {
-            if (navAgent.ValueRO.currentWaypoint + 1 < waypointBuffer.Length)
+            // Calculate direction towards the target
+            float3 direction = targetPosition - agentPosition;
+            desiredVelocity = math.normalize(direction) * navAgent.ValueRO.moveSpeed;
+        }
+        else
+        {
+            // Check if we have reached the current waypoint
+            if (math.distance(agentPosition, waypointBuffer[navAgent.ValueRO.currentWaypoint].wayPoint) < 0.4f)
             {
-                navAgent.ValueRW.currentWaypoint += 1;
+                if (navAgent.ValueRO.currentWaypoint + 1 < waypointBuffer.Length)
+                {
+                    navAgent.ValueRW.currentWaypoint += 1;
+                }
+                else
+                {
+                    // Reached the last waypoint, start moving directly towards the target
+                    navAgent.ValueRW.currentWaypoint += 1;
+                }
+            }
+
+            // Ensure currentWaypoint index is within bounds
+            if (navAgent.ValueRO.currentWaypoint < waypointBuffer.Length)
+            {
+                float3 direction = waypointBuffer[navAgent.ValueRO.currentWaypoint].wayPoint - agentPosition;
+                desiredVelocity = math.normalize(direction) * navAgent.ValueRO.moveSpeed;
             }
             else
             {
-                // Reached the last waypoint
-                return;
+                // Move directly towards the target
+                float3 direction = targetPosition - agentPosition;
+                desiredVelocity = math.normalize(direction) * navAgent.ValueRO.moveSpeed;
             }
         }
 
-        float3 direction = waypointBuffer[navAgent.ValueRO.currentWaypoint].wayPoint - transform.ValueRO.Position;
-
-        // Calculate the desired velocity towards the next waypoint
-        float3 desiredDirection = math.normalize(direction);
-        float3 desiredVelocity = desiredDirection * navAgent.ValueRO.moveSpeed;
-
-        // Calculate avoidance velocity
-        float3 avoidanceVelocity = CalculateAvoidanceVelocity(navAgent, transform, agentEntities, agentPositions, entity);
-
-        // Combine the desired velocity with the avoidance velocity
-        float3 combinedVelocity = desiredVelocity + avoidanceVelocity;
+        // Combine the desired velocity (no avoidance)
+        float3 combinedVelocity = desiredVelocity;
 
         // Limit the combined velocity to the agent's moveSpeed
         if (math.length(combinedVelocity) > navAgent.ValueRO.moveSpeed)
@@ -122,57 +135,11 @@ public partial struct NavAgentSystem : ISystem
         }
 
         // Move the agent
-        float3 newPosition = transform.ValueRO.Position + combinedVelocity * SystemAPI.Time.DeltaTime;
+        float3 newPosition = agentPosition + combinedVelocity * SystemAPI.Time.DeltaTime;
 
         // Project the new position onto the NavMesh
         NavMeshLocation location = query.MapLocation(newPosition, new float3(2, 2, 2), 0);
         transform.ValueRW.Position = location.position;
-    }
-
-
-    private float3 CalculateAvoidanceVelocity(
-        RefRW<NavAgentComponent> navAgent,
-        RefRW<LocalTransform> transform,
-        NativeArray<Entity> agentEntities,
-        NativeArray<float3> agentPositions,
-        Entity entity)
-    {
-        float3 avoidanceVelocity = float3.zero;
-        int neighborCount = 0;
-        float3 agentPosition = transform.ValueRO.Position;
-
-        // Loop through all other agents
-        for (int i = 0; i < agentEntities.Length; i++)
-        {
-            Entity otherEntity = agentEntities[i];
-
-            // Skip self
-            if (otherEntity == entity)
-                continue;
-
-            float3 otherPosition = agentPositions[i];
-            float distance = math.distance(agentPosition, otherPosition);
-
-            if (distance < navAgent.ValueRO.avoidanceRadius && distance > 0)
-            {
-                // Calculate avoidance direction
-                float3 directionAway = agentPosition - otherPosition;
-                float3 normalizedDirectionAway = math.normalize(directionAway);
-
-                // Weight the avoidance based on distance
-                float weight = (navAgent.ValueRO.avoidanceRadius - distance) / navAgent.ValueRO.avoidanceRadius;
-                avoidanceVelocity += normalizedDirectionAway * weight;
-                neighborCount++;
-            }
-        }
-
-        if (neighborCount > 0)
-        {
-            avoidanceVelocity /= neighborCount;
-            avoidanceVelocity = math.normalize(avoidanceVelocity) * navAgent.ValueRO.moveSpeed;
-        }
-
-        return avoidanceVelocity;
     }
 
     [BurstCompile]

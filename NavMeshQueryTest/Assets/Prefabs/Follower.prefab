@@ -152,5 +152,5 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   targetTransform: {fileID: 0}
-  moveSpeed: 6
-  avoidanceRadius: 1
+  moveSpeed: 15
+  avoidanceRadius: 0

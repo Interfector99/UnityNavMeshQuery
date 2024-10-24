@@ -9,8 +9,9 @@ public struct NavAgentComponent : IComponentData
     public int currentWaypoint;
     public float moveSpeed;
     public float nextPathCalculateTime;
-    public float avoidanceRadius;
+    public float3 lastTargetPosition;
 }
+
 
 public struct WaypointBuffer : IBufferElementData
 {
@@ -33,7 +34,7 @@ public class NavAgentAuthoring : MonoBehaviour
             {
                 targetEntity = GetEntity(authoring.targetTransform, TransformUsageFlags.Dynamic),
                 moveSpeed = authoring.moveSpeed,
-                avoidanceRadius = authoring.avoidanceRadius,
+                lastTargetPosition = authoring.targetTransform.position,
             });
             AddBuffer<WaypointBuffer>(authoringEntity);
         }
