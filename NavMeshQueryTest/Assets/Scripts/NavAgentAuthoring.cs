@@ -4,14 +4,11 @@ using Unity.Mathematics;
 
 public struct NavAgentComponent : IComponentData
 {
-    public Entity targetEntity;
-    public bool pathCalculated;
+    public float3 targetPosition;
     public int currentWaypoint;
     public float moveSpeed;
-    public float nextPathCalculateTime;
-    public float3 lastTargetPosition;
+    public bool pathCalculated;
 }
-
 
 public struct WaypointBuffer : IBufferElementData
 {
@@ -20,11 +17,10 @@ public struct WaypointBuffer : IBufferElementData
 
 public class NavAgentAuthoring : MonoBehaviour
 {
-    [SerializeField] private Transform targetTransform;
+    [SerializeField] private GameObject targetGameObject;
     [SerializeField] private float moveSpeed;
-    [SerializeField] private float avoidanceRadius;
 
-    private class AuthoringBaker : Baker<NavAgentAuthoring>
+    private class Baker : Baker<NavAgentAuthoring>
     {
         public override void Bake(NavAgentAuthoring authoring)
         {
@@ -32,9 +28,9 @@ public class NavAgentAuthoring : MonoBehaviour
 
             AddComponent(authoringEntity, new NavAgentComponent
             {
-                targetEntity = GetEntity(authoring.targetTransform, TransformUsageFlags.Dynamic),
+                targetPosition = authoring.targetGameObject.transform.position,
                 moveSpeed = authoring.moveSpeed,
-                lastTargetPosition = authoring.targetTransform.position,
+                pathCalculated = false
             });
             AddBuffer<WaypointBuffer>(authoringEntity);
         }

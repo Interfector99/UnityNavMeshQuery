@@ -24,87 +24,52 @@ public partial struct NavAgentSystem : ISystem
         {
             DynamicBuffer<WaypointBuffer> waypointBuffer = state.EntityManager.GetBuffer<WaypointBuffer>(entity);
 
-            float3 currentTargetPosition = state.EntityManager.GetComponentData<LocalTransform>(navAgent.ValueRO.targetEntity).Position;
-
-            // Check if the target has moved
-            if (!math.all(navAgent.ValueRO.lastTargetPosition == currentTargetPosition))
+            if (!navAgent.ValueRO.pathCalculated)
             {
-                // Update last known target position
-                navAgent.ValueRW.lastTargetPosition = currentTargetPosition;
-
-                // Force immediate path recalculation
-                navAgent.ValueRW.nextPathCalculateTime = 0;
-                navAgent.ValueRW.pathCalculated = false;
-                waypointBuffer.Clear();
-            }
-
-            if (navAgent.ValueRO.nextPathCalculateTime < SystemAPI.Time.ElapsedTime)
-            {
-                navAgent.ValueRW.nextPathCalculateTime = (float)SystemAPI.Time.ElapsedTime + 1; // Update to recalculate every second
-                navAgent.ValueRW.pathCalculated = false;
-                CalculatePath(navAgent, transform, waypointBuffer, ref state);
+                navAgent.ValueRW.pathCalculated = true;
+                CalculatePath(navAgent, transform, waypointBuffer);
             }
             else
             {
-                Move(navAgent, transform, waypointBuffer, ref state, entity, query);
+                Move(navAgent, transform, waypointBuffer, query, SystemAPI.Time.DeltaTime);
             }
         }
 
         query.Dispose();
     }
 
-
     [BurstCompile]
     private void Move(
     RefRW<NavAgentComponent> navAgent,
     RefRW<LocalTransform> transform,
     DynamicBuffer<WaypointBuffer> waypointBuffer,
-    ref SystemState state,
-    Entity entity,
-    NavMeshQuery query)
+    NavMeshQuery query,
+    float deltaTime)
     {
         float3 agentPosition = transform.ValueRO.Position;
-        float3 targetPosition = state.EntityManager.GetComponentData<LocalTransform>(navAgent.ValueRO.targetEntity).Position;
-
-        // Define a stopping distance
-        float stoppingDistance = 0.5f; // Adjust as needed
-
-        // Calculate the distance to the target
+        float3 targetPosition = navAgent.ValueRO.targetPosition;
         float distanceToTarget = math.distance(agentPosition, targetPosition);
+        float stoppingDistance = 0.2f;
 
-        // If the agent is within stopping distance, do nothing
         if (distanceToTarget <= stoppingDistance)
         {
-            // Agent has reached the target
             return;
         }
 
         float3 desiredVelocity;
 
-        // If no waypoints or reached the end of waypoints, move directly towards the target
         if (waypointBuffer.Length == 0 || navAgent.ValueRO.currentWaypoint >= waypointBuffer.Length)
         {
-            // Calculate direction towards the target
             float3 direction = targetPosition - agentPosition;
             desiredVelocity = math.normalize(direction) * navAgent.ValueRO.moveSpeed;
         }
         else
         {
-            // Check if we have reached the current waypoint
-            if (math.distance(agentPosition, waypointBuffer[navAgent.ValueRO.currentWaypoint].wayPoint) < 0.4f)
+            if (math.distance(agentPosition, waypointBuffer[navAgent.ValueRO.currentWaypoint].wayPoint) < stoppingDistance)
             {
-                if (navAgent.ValueRO.currentWaypoint + 1 < waypointBuffer.Length)
-                {
-                    navAgent.ValueRW.currentWaypoint += 1;
-                }
-                else
-                {
-                    // Reached the last waypoint, start moving directly towards the target
-                    navAgent.ValueRW.currentWaypoint += 1;
-                }
+                navAgent.ValueRW.currentWaypoint += 1;
             }
 
-            // Ensure currentWaypoint index is within bounds
             if (navAgent.ValueRO.currentWaypoint < waypointBuffer.Length)
             {
                 float3 direction = waypointBuffer[navAgent.ValueRO.currentWaypoint].wayPoint - agentPosition;
@@ -112,32 +77,24 @@ public partial struct NavAgentSystem : ISystem
             }
             else
             {
-                // Move directly towards the target
                 float3 direction = targetPosition - agentPosition;
                 desiredVelocity = math.normalize(direction) * navAgent.ValueRO.moveSpeed;
             }
         }
 
-        // Combine the desired velocity (no avoidance)
-        float3 combinedVelocity = desiredVelocity;
-
-        // Limit the combined velocity to the agent's moveSpeed
-        if (math.length(combinedVelocity) > navAgent.ValueRO.moveSpeed)
+        if (math.length(desiredVelocity) > navAgent.ValueRO.moveSpeed)
         {
-            combinedVelocity = math.normalize(combinedVelocity) * navAgent.ValueRO.moveSpeed;
+            desiredVelocity = math.normalize(desiredVelocity) * navAgent.ValueRO.moveSpeed;
         }
 
-        // Rotate the agent towards the movement direction
-        if (!math.all(combinedVelocity == float3.zero))
+        if (!math.all(desiredVelocity == float3.zero))
         {
-            float angle = math.degrees(math.atan2(combinedVelocity.x, combinedVelocity.z));
+            float angle = math.degrees(math.atan2(desiredVelocity.x, desiredVelocity.z));
             transform.ValueRW.Rotation = quaternion.RotateY(math.radians(angle));
         }
 
-        // Move the agent
-        float3 newPosition = agentPosition + combinedVelocity * SystemAPI.Time.DeltaTime;
+        float3 newPosition = agentPosition + desiredVelocity * deltaTime;
 
-        // Project the new position onto the NavMesh
         NavMeshLocation location = query.MapLocation(newPosition, new float3(2, 2, 2), 0);
         transform.ValueRW.Position = location.position;
     }
@@ -146,13 +103,12 @@ public partial struct NavAgentSystem : ISystem
     private void CalculatePath(
         RefRW<NavAgentComponent> navAgent,
         RefRW<LocalTransform> transform,
-        DynamicBuffer<WaypointBuffer> waypointBuffer,
-        ref SystemState state)
+        DynamicBuffer<WaypointBuffer> waypointBuffer)
     {
         NavMeshQuery query = new NavMeshQuery(NavMeshWorld.GetDefaultWorld(), Allocator.TempJob, 1000);
 
         float3 fromPosition = transform.ValueRO.Position;
-        float3 toPosition = state.EntityManager.GetComponentData<LocalTransform>(navAgent.ValueRO.targetEntity).Position;
+        float3 toPosition = navAgent.ValueRO.targetPosition;
         float3 extents = new float3(1, 1, 1);
 
         NavMeshLocation fromLocation = query.MapLocation(fromPosition, extents, 0);
@@ -167,7 +123,7 @@ public partial struct NavAgentSystem : ISystem
             status = query.BeginFindPath(fromLocation, toLocation);
             if (status == PathQueryStatus.InProgress)
             {
-                status = query.UpdateFindPath(100, out int iterationsPerformed);
+                status = query.UpdateFindPath(500, out int iterationsPerformed);
                 if (status == PathQueryStatus.Success)
                 {
                     status = query.EndFindPath(out int pathSize);
@@ -202,12 +158,14 @@ public partial struct NavAgentSystem : ISystem
                         {
                             if (location.position != Vector3.zero)
                             {
-                                waypointBuffer.Add(new WaypointBuffer { wayPoint = location.position });
+                                waypointBuffer.Add(new WaypointBuffer 
+                                { 
+                                    wayPoint = location.position 
+                                });
                             }
                         }
 
                         navAgent.ValueRW.currentWaypoint = 0;
-                        navAgent.ValueRW.pathCalculated = true;
                     }
                     straightPathFlag.Dispose();
                     polygonIds.Dispose();
