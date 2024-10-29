@@ -8,7 +8,13 @@ public struct NavAgentComponent : IComponentData
     public int currentWaypoint;
     public float moveSpeed;
     public bool pathCalculated;
+
+    public float avoidanceRadius;
+    public int2 gridPosition;
+
+    public bool reachedDestination;
 }
+
 
 public struct WaypointBuffer : IBufferElementData
 {
@@ -20,6 +26,8 @@ public class NavAgentAuthoring : MonoBehaviour
     [SerializeField] private GameObject targetGameObject;
     [SerializeField] private float moveSpeed;
 
+    [SerializeField] private float avoidanceRadius;
+
     private class Baker : Baker<NavAgentAuthoring>
     {
         public override void Bake(NavAgentAuthoring authoring)
@@ -30,7 +38,9 @@ public class NavAgentAuthoring : MonoBehaviour
             {
                 targetPosition = authoring.targetGameObject.transform.position,
                 moveSpeed = authoring.moveSpeed,
-                pathCalculated = false
+                pathCalculated = false,
+
+                avoidanceRadius = authoring.avoidanceRadius
             });
             AddBuffer<WaypointBuffer>(authoringEntity);
         }
