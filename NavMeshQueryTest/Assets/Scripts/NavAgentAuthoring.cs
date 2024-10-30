@@ -23,7 +23,6 @@ public struct WaypointBuffer : IBufferElementData
 
 public class NavAgentAuthoring : MonoBehaviour
 {
-    [SerializeField] private GameObject targetGameObject;
     [SerializeField] private float moveSpeed;
 
     [SerializeField] private float avoidanceRadius;
@@ -36,7 +35,6 @@ public class NavAgentAuthoring : MonoBehaviour
 
             AddComponent(authoringEntity, new NavAgentComponent
             {
-                targetPosition = authoring.targetGameObject.transform.position,
                 moveSpeed = authoring.moveSpeed,
                 pathCalculated = false,
 
